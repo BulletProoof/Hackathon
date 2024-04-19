@@ -7,12 +7,18 @@ from deap import base, tools, creator, algorithms
 import random
 from copy import deepcopy
 from pprint import pprint
+import datetime
 
 # 自编写功能模块
 from getData import get_data
+from DataFormat import *
 
-node_dict, vehicle_dict, dist_time_dict, order_dict = get_data()
-print(order_dict)
+node_dict, vehicle_dict, cost_dict, order_dict = get_data()
+
+# TODO1：路径优化，合并起点，一起送到终点。
+# TODO2：车辆载重会随着动态变化，并不是全加一起，这里很关键
+# TODO3：optimizePermutation.py
+
 
 params = {
     'font.family': 'serif',
@@ -80,10 +86,10 @@ def genInd():
 
     #  在排列中，负数作为标志，定位某一车辆的运输路线最后一个顾客
     for i in range(5):
-
         pointer = 0  # 迭代指针
         lowPointer = 0  # 指针指向下界
-        max_load = vehicle_dict[i][1]
+        max_load = vehicle_dict[i].upper
+        # max_load = vehicle_dict[i][1]
         length = len(load_arr[i])
         if length == 0:
             continue
@@ -94,7 +100,7 @@ def genInd():
             # 当不超载时，继续装载，现在只考虑上界，暂时不考虑下界
             while (pointer <= length - 1) and (vehicleLoad <= max_load):
                 order_id = load_arr[i][pointer][0]
-                volume = order_dict[order_id][4]  # volume, max(volume=52)
+                volume = order_dict[order_id].volume  # volume, max(volume=52)
                 vehicleLoad += volume
                 pointer += 1
             # 在第一次生成可行方案的时候，保证不会出现，顾客的需求大于车容量，也就是说不会出现lowPointer+1>=pointer的情况
@@ -135,8 +141,8 @@ def decodeInd(ind):
             temp_lst = []
             lst = value[i]
             for it in lst:
-                origin_id = order_dict[it][0]
-                destination_id = order_dict[it][1]
+                origin_id = order_dict[it].origin_id
+                destination_id = order_dict[it].destination_id
                 temp_lst.append(origin_id)
                 temp_lst.append(destination_id)
             route_slice.append(temp_lst)
@@ -144,80 +150,155 @@ def decodeInd(ind):
     return customers, routes
 
 
-def cal_dist(node1, node2):
+def cal_route_cost(route_dict):
     """
-   :param node1:起始点
-   :param node2: 终点
-   :return: 运输距离
-   """
-    return dist_time_dict[(node1, node2)][0]
-
-def cal_route_duration_cost(route_dict):
-    routes_duration = 0
+    计算染色体解码路径的运输费用
+    :param route_dict:
+    :return:
+    """
     routes_cost = 0.0
     for key, lists in route_dict.items():
         for lst in lists:
             single_route = 0.0
+            single_duration = 0
             for x, y in zip(lst[0:], lst[1:]):
-                routes_duration += dist_time_dict[(x, y)][0]
-                single_route += dist_time_dict[(x, y)][1]
+                # 判断cost_dict是否有（x,y)对于的Cost对象
+                if (x, y) in cost_dict.keys():
+                    single_route += cost_dict[(x, y)].cost
+                elif x == y:
+                    single_route += 0.0
+                else:
+                    print('no find')
+                    single_route += INF
                 routes_cost += single_route
-            print(lst)
-            print(single_route)
-    return routes_duration, routes_cost
+    return routes_cost
 
+def cal_total_route_cost(route_dict):
+    """
+    计算染色体解码路径的运输费用+固定费用，最小化目标之一
+    :param route_dict:
+    :return:
+    """
+    total_routes_cost = 0.0
+    for key, lists in route_dict.items():
+        total_routes_cost += vehicle_dict[key].price * len(lists)
+        for lst in lists:
+            single_route = 0.0
+            single_duration = 0
+            for x, y in zip(lst[0:], lst[1:]):
+                # 判断cost_dict是否有（x,y)对于的Cost对象
+                if (x, y) in cost_dict.keys():
+                    single_route += cost_dict[(x, y)].cost
+                elif x == y:
+                    single_route += 0.0
+                else:
+                    print('no find')
+                    single_route += INF
+                total_routes_cost += single_route
+    return total_routes_cost
+
+def cal_route_waitting_time(schedule_dict):
+    """
+    计算所有订单等待时间，最小化目标之一
+    :param schedule_dict:
+    :return:
+    """
+    waitting_time = 0
+    for k, v in schedule_dict.items():
+        # time_diff类型为：datetime
+        time_diff = v.actual_pickup_time - v.expect_pickup_time
+        waitting_time += time_diff.total_seconds()
+    return waitting_time
+
+def cal_route_load(customers):
+    """
+    计算染色体解码的路线载重
+    :param customers:各种车型的路线字典，例子：{2: [[1, 4], [5, 6]],3:[8, 12], [13, 16, 17]]}
+    :return:
+    """
+    route_load = 0.0
+    for key, val in customers.items():
+        for each_route in val:
+            route_load += np.sum([order_dict[i].volume for i in each_route])
+    return route_load
 
 def loadPenalty(customers):
-    route_dict = {}
     """
     辅助函数，因为在交叉和突变中可能会产生不符合负载约束的个体，需要对不合要求的个体进行惩罚
-    :param routes: 
-    :return: 
+    计算每条路径的负载，取max(0, routeLoad - maxLoad)计入惩罚项
+    :param customers: 各种车型的路线字典，例子：{2: [[1, 4], [5, 6]],3:[8, 12], [13, 16, 17]]}
+    :return: penalty 惩罚系数
     """
     penalty = 0
-
-    # 计算每条路径的负载，取max(0, routeLoad - maxLoad)计入惩罚项
     # key为车型，val对应的多条路线
     for key, val in customers.items():
         for each_route in val:
-            each_route_load = np.sum([order_dict[i][4] for i in each_route])
-            penalty += max(0, each_route_load - vehicle_dict[key][1])
-
+            each_route_load = np.sum([order_dict[i].volume for i in each_route])
+            penalty += max(0, each_route_load - vehicle_dict[key].upper)
     return penalty
 
 
-def calcRouteServiceTime(route, dataDict=dataDict):
-    """辅助函数，根据给定路径，计算到达该路径上各顾客的时间"""
-    # 初始化serviceTime数组，其长度应该比eachRoute小2
-    serviceTime = [0] * (len(route) - 2)
-    # 从仓库到第一个客户时不需要服务时间
-    arrivalTime = cal_dist(dataDict['NodeCoor'][0], dataDict['NodeCoor'][route[1]]) / dataDict['Velocity']
-    arrivalTime = max(arrivalTime, dataDict['Timewindow'][route[1]][0])
-    serviceTime[0] = arrivalTime
-    arrivalTime += dataDict['ServiceTime']  # 在出发前往下个节点前完成服务
-    for i in range(1, len(route) - 2):
-        # 计算从路径上当前节点[i]到下一个节点[i+1]的花费的时间
-        arrivalTime += cal_dist(dataDict['NodeCoor'][route[i]], dataDict['NodeCoor'][route[i + 1]]) / dataDict[
-            'Velocity']
-        arrivalTime = max(arrivalTime, dataDict['Timewindow'][route[i + 1]][0])
-        serviceTime[i] = arrivalTime
-        arrivalTime += dataDict['ServiceTime']  # 在出发前往下个节点前完成服务
-    return serviceTime
+def calcRouteServiceTime(customers, routes):
+    """
+    根据染色体，计算每个顾客被服务的时间相关信息
+    辅助函数，根据给定路径，计算到达该路径上各顾客的时间
+    :param customers:各种车型的路线字典，例子：{2: [[1, 4], [5, 6]],3:[8, 12], [13, 16, 17]]}
+    :param routes: 各种车型的路线字典，例子：{2: [['o8', 'd2', 'o0', 'd0']], 3:[['o7', 'd0', 'o6', 'd0'], ['o1', 'd1', 'o9', 'd2']}
+    :return:
+    """
+    schedule_dict = defaultdict(OrderSchedule)
+    for key, val in customers.items():
+        for each_route in val:
+            order_schedules = []
+            order_n = len(each_route)
+            for i in range(order_n):
+                order_id = each_route[i]
+                origin_id = order_dict[order_id].origin_id
+                destination_id = order_dict[order_id].destination_id
+                expect_pickup_time = order_dict[order_id].expect_pickup_time
+                expect_dropoff_time = order_dict[order_id].expect_dropoff_time
+                service_time = order_dict[order_id].service_time
 
+                actual_pickup_time = datetime.datetime(1970, 1, 1, 0, 0, 0)  # 初始化为1970年1月1日的0时0分0秒
+                actual_dropoff_time = datetime.datetime(1970, 1, 1, 0, 0, 0)  # 同上
+                transit_time = datetime.timedelta(seconds=0)  # 使用datetime.timedelta来表示持续时间，初始为0秒
+                leave_time = datetime.datetime(1970, 1, 1, 0, 0, 0)  # 同上
 
-def timeTable(distributionPlan, dataDict=dataDict):
-    '''辅助函数，依照给定配送计划，返回每个顾客受到服务的时间'''
-    # 对于每辆车的配送路线，第i个客户受到服务的时间serviceTime[i]是min(TimeWindow[i][0], arrivalTime[i])
-    # arrivalTime[i] = serviceTime[i-1] + 服务时间 + distance(i,j)/averageVelocity
-    timeArrangement = []  # 容器，用于存储每个顾客受到服务的时间
-    for eachRoute in distributionPlan:
-        serviceTime = calcRouteServiceTime(eachRoute)
-        timeArrangement.append(serviceTime)
-    # 将数组重新组织为与基因编码一致的排列方式
-    realignedTimeArrangement = [0]
-    for routeTime in timeArrangement:
-        realignedTimeArrangement = realignedTimeArrangement + routeTime + [0]
-    return realignedTimeArrangement
+                # 使用不同的参数来初始化datetime.datetime对象，根据你的需求更改日期和时间
+
+                if i == 0:
+                    # 当订单是第一个时，实际服务时间为期望服务时间
+                    actual_pickup_time = expect_pickup_time
+                    # 离开时间=实际服务时间+服务时长
+                    leave_time = actual_pickup_time + datetime.timedelta(seconds=service_time)
+                    actual_dropoff_time = leave_time + datetime \
+                        .timedelta(seconds=cost_dict[(origin_id, destination_id)].duration)
+                    if i + 1 < order_n:
+                        # 车辆路径上不止1个顾客，上一个顾客到下一个顾客有在途时间
+                        # 在途时间=cost[(上个顾客的终点,下个顾客的起点)].duration。
+                        # 下个customer（order）的id
+                        sub_order_id = each_route[i + 1]
+                        transit_time = cost_dict[(order_dict[order_id].destination_id,
+                                                  order_dict[sub_order_id].origin_id)].duration
+                elif i >= 1:
+                    # 不是第一个，有前一个顾客。实际服务时间=max(前一个顾客离开时间+在途时间,期望服务时间)
+                    # pre_order_id: 前一个顾客id
+                    pre_order_id = each_route[i - 1]
+                    actual_pickup_time = max(schedule_dict[pre_order_id].leave_time + datetime.timedelta(
+                        seconds=schedule_dict[pre_order_id].transit_time),expect_pickup_time)
+
+                    if i + 1 < order_n:
+                        # 不是最后一个顾客
+                        sub_order_id = each_route[i + 1]
+                        transit_time = cost_dict[(order_dict[order_id].destination_id,
+                                                  order_dict[sub_order_id].origin_id)].duration
+                # 将订单服务时间等信息存到schedule_dict里面
+                schedule_dict[order_id] = OrderSchedule(order_id, expect_pickup_time, expect_dropoff_time,
+                                                        actual_pickup_time, actual_dropoff_time,
+                                                        service_time, leave_time, transit_time)
+
+    return schedule_dict
+
 
 
 def timePenalty(ind, routes):
@@ -230,21 +311,12 @@ def timePenalty(ind, routes):
     return np.sum(timeDelay) / len(timeDelay)
 
 
-def calRouteLen(routes, dataDict=dataDict):
-    """辅助函数，返回给定路径的总长度"""
-    totalDistance = 0  # 记录各条路线的总长度
-    for eachRoute in routes:
-        # 从每条路径中抽取相邻两个节点，计算节点距离并进行累加
-        for i, j in zip(eachRoute[0::], eachRoute[1::]):
-            totalDistance += cal_dist(dataDict['NodeCoor'][i], dataDict['NodeCoor'][j])
-    return totalDistance
-
 
 def evaluate(ind, c1=10.0, c2=500.0):
     """评价函数，返回解码后路径的总长度，c1, c2分别为车辆超载与不能服从给定时间窗口的惩罚系数"""
-    routes = decodeInd(ind)  # 将个体解码为路线
-    totalDistance = calRouteLen(routes)
-    return (totalDistance + c1 * loadPenalty(routes) + c2 * timePenalty(ind, routes)),
+    routes = decodeInd(ind)[1]  # 将个体解码为路线
+    total_cost = cal_total_route_cost(routes)
+    return (total_cost + c1 * loadPenalty(routes) + c2 * timePenalty(ind, routes)),
 
 
 # -----------------------------------
