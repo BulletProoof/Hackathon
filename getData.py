@@ -22,22 +22,6 @@ def get_data(file_path=None):
     # 创建订单字典，key:order_id,val:Order
     order_dict = defaultdict(Order)
 
-    """
-    # 创建距离和配送时间字典，存放数据
-    dist_time_dict = defaultdict(lambda: (0x3f3f3f, 0x3f3f3f))
-
-    # 存放点的数据
-    node_dict = defaultdict(lambda: (0, 0))
-
-    # 存放车辆的数据
-    vehicle_dict = defaultdict(lambda: (0, 0, 0))
-
-    # 存放订单的数据:order_id,origin_id,destination_id
-    # expect_pickup_time,expect_dropoff_time,
-    # volume,service_time,max_waiting_time
-    order_dict = defaultdict(lambda: (0, 0, 0, 0, 0, 0, 0))
-    """
-
     with open('data/transport_cost.csv', 'r') as file:
 
         # Create a CSV reader
@@ -101,7 +85,12 @@ def get_data(file_path=None):
         next(csv_reader)
 
         # Iterate over each row in the CSV file
+        i = 0
         for row in csv_reader:
+            # 读取前200行，测试用
+            if i > 200:
+                continue
+            i += 1
             order_id = int(row[0])
             origin_id = str(row[1])
             destination_id = str(row[2])

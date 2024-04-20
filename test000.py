@@ -1,4 +1,5 @@
 # 环境设定
+import time
 from collections import defaultdict
 
 import numpy as np
@@ -68,6 +69,10 @@ def genInd():
     for idx, num in enumerate(ind):
         load_arr[abs(int(num))].append((idx + 1, num))  # 注意order_id是从1开始的
 
+    # 对每个车型的顾客按照优先级进行排序
+    for i in range(5):
+        load_arr[i] = sorted(load_arr[i], key=lambda x: x[1])
+
     #  在排列中，负数作为标志，定位某一车辆的运输路线最后一个顾客
     for i in range(5):
         pointer = 0  # 迭代指针
@@ -105,19 +110,28 @@ def decodeInd(ind):
     """从染色体解码回路线片段"""
     customers = defaultdict(list)
     routes = defaultdict(list)
+    # 存放5种车型的订单
+    customers_by_vehicle = [[] for _ in range(5)]
+
+    # 1 计算customers
+    # 1.1遍历车型,分别放到5种车型的列表中
+    for i in range(len(ind)):
+        num = ind[i]
+        customers_by_vehicle[abs(int(num))].append((i+1, num))  # order_id 从1开始
+    # 1.2对每个车型的列表进行绝对值排序，若当前元素<0，是车辆最后一个顾客，添加到顾客字典中
     for i in range(5):
-        route_slice = []
-        for j in range(len(ind)):
-            num = ind[j]
-            idx = j + 1
-            if abs(int(num)) == i:
-                route_slice.append(idx)
-                if num < 0.0:
-                    customers[i].append(route_slice)
-                    route_slice = []
-            if j == len(ind) - 1 and len(route_slice) != 0:
-                customers[i].append(route_slice)
-                route_slice = []
+        customers_by_vehicle[i] = sorted(customers_by_vehicle[i], key=lambda x: abs(x[1]))
+        customer_slice = []
+        for idx, num in customers_by_vehicle[i]:
+            customer_slice.append(idx)
+            if num < 0:
+                customers[i].append(customer_slice)
+                customer_slice = []
+        if len(customer_slice) != 0:
+            customers[i].append(customer_slice)
+            customer_slice = []
+
+    # 2 计算routes
     for key, value in customers.items():
         route_slice = []
         for i in range(len(value)):
@@ -325,8 +339,12 @@ def evaluate(ind, c1=150000.0, c2=1000):
     total_cost = cal_total_route_cost(routes)
     schedule_dict = calcRouteServiceTime(customers, routes)
     total_waitting_time = cal_route_waitting_time(schedule_dict)
-    # return (total_cost + total_waitting_time / 60 + c1 * loadPenalty(customers) + c2 * timePenalty(schedule_dict)),
-    return total_cost,
+    # tprint(customers)
+    # tprint(routes)
+    # tprint(schedule_dict)
+    # time.sleep(30)
+    return (total_cost + total_waitting_time / 60 + c1 * loadPenalty(customers) + c2 * timePenalty(schedule_dict)),
+    # return total_cost,
 
 # -----------------------------------
 # 交叉操作
@@ -374,7 +392,7 @@ def evaluate(ind, c1=150000.0, c2=1000):
 def crossover(ind1, ind2):
     """交叉操作"""
     ind_len = len(ind1)
-    cross_len = random.randint(5, 10)
+    cross_len = random.randint(1, 4)
     start_idx = random.randint(0, ind_len-cross_len)
     end_idx = start_idx + cross_len - 1
     ind1[start_idx:end_idx], ind2[start_idx:end_idx] = ind2[start_idx:end_idx], ind1[start_idx:end_idx]
@@ -484,7 +502,7 @@ stats.register('std', np.std)
 hallOfFame = tools.HallOfFame(maxsize=1)
 
 ## 遗传算法参数
-toolbox.ngen = 400
+toolbox.ngen = 2000
 toolbox.cxpb = 0.8
 toolbox.mutpb = 0.1
 
